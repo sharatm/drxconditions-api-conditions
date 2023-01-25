@@ -1,0 +1,96 @@
+name: Deploy Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_name:
+        description: 'Dev'
+        required: true
+
+env:
+  DOCKER_REGISTRY: 'artifactory.ssnc.dev'
+  DOCKER_REGISTRY_IMAGE: 'ssnchealth/pharmacy/drxconditions/api/conditions'
+  HELM_REPO: https://artifactory.ssnc.dev/artifactory/pharmacy-helm-local
+  HELM_CHART: pharmacy/project-chart
+  KUBE_NAMESPACE: drxconditions-api-conditions
+  INGRESS_PATH: /drxconditions/api/conditions
+
+jobs:
+  deploy:
+    container:
+      image: 'artifactory.ssnc.dev/docker-repos/alpine/helm:3.6.3'
+      credentials:
+        username: ${{ secrets.ARTIFACTORY_USER }}
+        password: ${{ secrets.ARTIFACTORY_PASS }}
+    runs-on: [ ssc-cloud, shared ]
+    env:
+      ENVIRONMENT_NAME: ${{ secrets[format('{0}_ENVIRONMENT_NAME', github.event.inputs.env_name)] }}
+      SPRING_PROFILE: ${{ secrets[format('{0}_SPRING_PROFILE', github.event.inputs.env_name)] }}
+      KUBE_CONFIG: ${{ secrets[format('CLAIMS_{0}_KUBE_CONFIG', github.event.inputs.env_name)] }}
+      KUBE_CONTEXT: ${{ secrets[format('CLAIMS_{0}_KUBE_CONTEXT', github.event.inputs.env_name)] }}
+      API_SSC_CLOUD_DOMAIN: ${{ secrets[format('CLAIMS_{0}_API_SSC_CLOUD_DOMAIN', github.event.inputs.env_name)] }}
+      API_RXTRANSACTION_DOMAIN: ${{ secrets[format('{0}_API_RXTRANSACTION_DOMAIN', github.event.inputs.env_name)] }}
+      CONFIG_API_URL: ${{ secrets[format('{0}_CONFIG_API_URL', github.event.inputs.env_name)] }}
+      CONFIG_USER: ${{ secrets[format('{0}_CONFIG_USER', github.event.inputs.env_name)] }}
+      CONFIG_USER_PASS: ${{ secrets[format('{0}_CONFIG_USER_PASS', github.event.inputs.env_name)] }}
+      ARTIFACTORY_USER: ${{secrets.ARTIFACTORY_USER}}
+      ARTIFACTORY_PASS: ${{secrets.ARTIFACTORY_PASS}}
+
+    steps:
+
+      - uses: actions/checkout@v2
+      - uses: azure/setup-kubectl@v1
+
+      - name: set k8s context
+        uses: azure/k8s-set-context@v1
+        id: set-k8s-context
+        with:
+          method: kubeconfig
+          kubeconfig: ${{env.KUBE_CONFIG}}
+          context: ${{env.KUBE_CONTEXT}}
+
+      - name: create namespace
+        run: |
+          kubectl create namespace ${{ env.KUBE_NAMESPACE}} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create docker secret
+        uses: azure/k8s-create-secret@v1
+        with:
+          secret-name: regcred
+          namespace: ${{ env.KUBE_NAMESPACE }}
+          container-registry-url: ${{ env.DOCKER_REGISTRY }}
+          container-registry-username: ${{ env.ARTIFACTORY_USER }}
+          container-registry-password: ${{ env.ARTIFACTORY_PASS }}
+        id: create-secret
+        continue-on-error: true
+
+      - name: Create config secret
+        uses: azure/k8s-create-secret@v1
+        with:
+          secret-name: config-secret
+          secret-type: 'generic'
+          namespace: ${{ env.KUBE_NAMESPACE }}
+          arguments: --from-literal=username=${{ env.CONFIG_USER }} --from-literal=password=${{ env.CONFIG_USER_PASS }}
+        id: create-config-secret
+        continue-on-error: true
+
+      - name: Helm Deploy
+        env:
+          DOCKER_IMAGE_PATH: ${{ env.DOCKER_REGISTRY}}/pharmacy-docker-local/${{env.DOCKER_REGISTRY_IMAGE}}
+        run: |
+          helm repo add pharmacy $HELM_REPO --username $ARTIFACTORY_USER --password $ARTIFACTORY_PASS
+          echo Deploying image $DOCKER_IMAGE_PATH:$GITHUB_SHA
+          helm uninstall --namespace $KUBE_NAMESPACE $ENVIRONMENT_NAME || true
+          helm install --namespace $KUBE_NAMESPACE --username $ARTIFACTORY_USER --password $ARTIFACTORY_PASS --wait --timeout 30s $ENVIRONMENT_NAME $HELM_REPO/project-chart-0.1.0.tgz \
+          --set ingress.annotations."konghq\.com/plugins"=corsplugin \
+          --set nameOverride=$KUBE_NAMESPACE \
+          --set image.repository=$DOCKER_IMAGE_PATH \
+          --set image.tag=$GITHUB_SHA \
+          --set ingress.hosts[0].host=$API_SSC_CLOUD_DOMAIN \
+          --set ingress.hosts[0].paths[0]=$INGRESS_PATH \
+          --set ingress.hosts[1].host=$API_RXTRANSACTION_DOMAIN \
+          --set ingress.hosts[1].paths[0]=$INGRESS_PATH \
+          --set envVariables[0].name=pharmacy.config.server.uri \
+          --set envVariables[0].value=$CONFIG_API_URL \
+          --set envVariables[1].name=spring.profiles.active \
+          --set envVariables[1].value=$SPRING_PROFILE

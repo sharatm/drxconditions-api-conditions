@@ -1,0 +1,158 @@
+openapi: 3.0.1
+info:
+   version: 1.0.0
+   title: Drxconditions Specification
+   description: Drxconditions API Services
+paths:
+  /:
+    get:
+      tags:
+        - conditions
+      summary: Get All Drxconditionss
+      description: Get a list of drxconditionss in the system
+      operationId: getAllDrxconditionss
+      responses:
+        200:
+          $ref: '#/components/responses/SuccessResponse'
+    post:
+      tags:
+        - conditions   
+      summary: New drxconditions object that needs to be added to the system.
+      operationId: addDrxconditions
+      description: Creates a new drxconditions into the system.
+      requestBody:
+        $ref: '#/components/requestBodies/DrxconditionsDTOBody'
+      responses:
+        '201':
+          $ref: '#/components/responses/SuccessResponse'
+  /search:
+    post:
+      tags:
+        - conditions   
+      summary: Search drxconditionss.
+      operationId: getDrxconditionsBySearchCriteria
+      description: Search drxconditions by search criteria.
+      requestBody:
+        $ref: '#/components/requestBodies/DrxconditionsSearchDTOBody'
+      responses:
+        '201':
+          $ref: '#/components/responses/SearchSuccessResponse'
+  /{drxconditionsId}:
+    parameters:
+      - name: drxconditionsId
+        in: path
+        description: Drxconditions Id
+        required: true
+        style: simple
+        explode: false
+        x-constraints: '@NotNull'
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags:
+        - conditions   
+      summary: Get Drxconditions By ID
+      description: Get a single **Drxconditions** by its Id value.
+      operationId: getDrxconditionsById
+      responses:
+        200:
+          $ref: '#/components/responses/SuccessResponse'
+    put:
+      tags:
+        - conditions 
+      summary: Update Drxconditions
+      description: Update Drxconditions by id.
+      operationId: updateDrxconditions
+      requestBody:
+        $ref: '#/components/requestBodies/DrxconditionsDTOBody'
+      responses:
+        200:
+          $ref: '#/components/responses/SuccessResponse'
+    delete:
+      tags:
+        - conditions    
+      summary: Delete drxconditions By ID
+      description: Inactivate a drxconditions by its Id value.
+      operationId: deleteDrxconditionsById
+      responses:
+        '200':
+          description: The resource was deleted successfully
+          $ref: '#/components/responses/SuccessResponse'
+tags:
+  - name: conditions
+    description: 'Operations about drxconditionss'
+components:
+  requestBodies:
+    DrxconditionsDTOBody:
+      required: true
+      content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DrxconditionsDTO'
+    DrxconditionsSearchDTOBody:
+      required: true
+      content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DrxconditionsSearchDTO'
+  responses:
+    SuccessResponse:
+      description: OK
+      headers: {}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ResponseData'
+    SearchSuccessResponse:
+      description: OK
+      headers: {}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SearchResponse'
+  schemas:
+    DrxconditionsDTO:
+      type: object
+      required:
+        - activeInd
+      description: drxconditions object
+      properties:
+        drxconditionsId:
+          type: integer
+          format: int64
+          readOnly: true
+        activeInd:
+          type: boolean
+          example: true      
+        processCreateTs:
+          type: string
+          format: date-time
+          readOnly: true
+        processCreateByUserId:
+          type: string
+          readOnly: true
+        processCreateByProgramId:
+          type: string
+          readOnly: true
+        processUpdateTs:
+          type: string
+          format: date-time
+          readOnly: true
+        processUpdateByUserId:
+          type: string
+          readOnly: true
+        processUpdateByProgramId:
+          type: string
+          readOnly: true
+    DrxconditionsSearchDTO:
+      type: object
+      properties:
+        activeInd:
+          type: boolean
+          example: true
+        pagination:
+           $ref: '#/components/schemas/Pagination'
+    Pagination:
+       title: Pagination
+       type: object 

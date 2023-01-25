@@ -1,0 +1,17 @@
+name: Check Approvers Workflow
+
+on: 
+  pull_request_review:
+    branches:
+      - main
+      - release/**
+
+jobs:
+  approver_validation:
+    runs-on: self-hosted
+    name: Approver Validation
+    steps:
+      - name: Approver Validation
+        uses: ssc/approvers-no-commiters@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

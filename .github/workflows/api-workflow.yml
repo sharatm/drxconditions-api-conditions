@@ -1,0 +1,160 @@
+name: API Workflow - Maven
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+    branches:
+      - main
+      - release/**
+      - dev/**
+
+env:
+  MAVEN_CLI_OPTS: '-s settings.xml -Dmaven.repo.local=maven.repository -T 1C --batch-mode --errors'
+  DOCKER_REGISTRY: 'artifactory.ssnc.dev'
+  DOCKER_REGISTRY_IMAGE: 'ssnchealth/pharmacy/drxconditions/api/conditions'
+  SONAR_PROJECT_KEY: 'com.domanirx.conditions:drxconditions-api-conditions'
+
+jobs:
+  build:
+    runs-on: [ ssc-cloud, shared ]
+    container:
+      image: 'artifactory.ssnc.dev/docker-repos/ssnchealth/pharmacy/mvn-jdk-git:3.8.3-openjdk-11-slim'
+      credentials:
+        username: ${{ secrets.ARTIFACTORY_USER }}
+        password: ${{ secrets.ARTIFACTORY_PASS }}
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - run: 'echo $SETTINGSXML >> settings.xml'
+        env:
+          SETTINGSXML: ${{secrets.SETTINGS_XML}}
+
+      - name: Determine version
+        id: determine_version
+        run: |
+          echo 'Determine version '
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          then  
+            repoName=`echo $GITHUB_REPOSITORY | cut -d '/' -f 2`
+            current_version=$repoName-${GITHUB_SHA::7}
+          elif [[ "$GITHUB_REF" == refs/heads/release/* ]]
+          then 
+            current_version=`echo "$(echo $GITHUB_REF | cut -d '/' -f 4)-${GITHUB_SHA::7}"`
+          else
+            current_version=`echo "$(echo $GITHUB_REF | cut -d '/' -f 4)-SNAPSHOT"`
+          fi
+          echo "version - "$current_version
+          echo "::set-output name=version::`echo $current_version`"
+        shell: bash
+
+        #    - name: Check for snapshot dependencies
+        #      if: github.event_name == 'pull_request' && (github.base_ref == 'main' || startsWith(github.base_ref, 'release/') )
+        #      run: |
+        #        current_version=${{steps.determine_version.outputs.version}}
+        #        if [[ "$current_version" == *-SNAPSHOT ]]
+        #        then
+        #          echo 'Check for snapshot dependencies with dummy version'
+        #          mvn $MAVEN_CLI_OPTS -Drevision=dummy-SNAPSHOT release:prepare -DdevelopmentVersion=dummy-SNAPSHOT -Darguments=-DskipTests -DdryRun=true
+        #        fi
+        #      shell: bash
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v1
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        with:
+          languages: java
+          queries: security-extended,security-and-quality
+          db-location: '${{ github.workspace }}/codeql_dbs'
+
+      - name: Build
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo 'Run maven build'
+          mvn $MAVEN_CLI_OPTS -Drevision=${{steps.determine_version.outputs.version}} clean verify
+
+      - name: Build for main branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo 'Run maven build with sonar'
+          mvn $MAVEN_CLI_OPTS -Drevision=${{steps.determine_version.outputs.version}} clean verify sonar:sonar -Dsonar.host.url=https://sonar.ssnc-corp.cloud/ -Dsonar.login=${{secrets.SONAR_TOKEN}}
+
+      - name: Perform CodeQL Analysis
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        uses: github/codeql-action/analyze@v1
+
+      - uses: actions/upload-artifact@v2
+        name: upload jar file
+        with:
+          name: jar
+          path: target/*.jar
+
+      - uses: actions/upload-artifact@v2
+        name: upload sonar report
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: sonarreport
+          path: target/sonar/report-task.txt
+
+
+  sonar_results:
+    container: artifactory.ssnc.dev/docker-repos/pipeline/jq:latest
+    needs: build
+    runs-on: [ ssc-cloud, shared ]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/download-artifact@v2
+        with:
+          name: sonarreport
+
+      - name: Sonarqube Results
+        uses: DevX/sonar-results-test@master
+        with:
+          SONAR_API_KEY: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ env.SONAR_PROJECT_KEY }}
+
+
+  docker_package:
+    container: artifactory.ssnc.dev/docker-repos/docker:19.03.1
+    runs-on: [ ssc-cloud, shared ]
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') )
+    needs: build
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+        with:
+          name: jar
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Log in to Artifactory
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.ARTIFACTORY_USER }}
+          password: ${{ secrets.ARTIFACTORY_PASS }}
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          build-args: VCS_REF=${{github.sha}}
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/pharmacy-docker-local/${{ env.DOCKER_REGISTRY_IMAGE}}
+          tags: ${{ env.DOCKER_REGISTRY }}/pharmacy-docker-local/${{ env.DOCKER_REGISTRY_IMAGE }}:${{github.sha}}
+          push: true
+
+
+  deploy_dev:
+    container: artifactory.ssnc.dev/docker-repos/alpine:latest
+    runs-on: [ ssc-cloud, shared ]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: docker_package
+    steps:
+      - name: Invoke deploy workflow
+        uses: benc-uk/workflow-dispatch@v1.1.0
+        with:
+          workflow: Deploy Workflow
+          token: ${{ secrets.SECURITY_TOKEN }}
+          inputs: '{"env_name": "dev"}'
